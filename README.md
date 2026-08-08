@@ -1,119 +1,99 @@
-SuperMarioBros-C
-================
+SuperMarioBros-Rust
+===================
 
-An attempt to translate the original Super Mario Bros. for the NES to readable C/C++.
+A playable reimplementation of the original NES *Super Mario Bros.* in **pure Rust**.
 
-I've taken the `smbdis.asm` disassembly of Super Mario Bros. and successfully converted it to C++ using an automated codegen program I wrote (which you can be found in the `codegen/` subdirectory of the repo). Right now, it looks very similar to the original disassembly and is fairly dense code, but it works! Check out `source/SMB/SMB.cpp` if you're curious.
+Rust port by **Anubhav Gain**. See [LICENSE](LICENSE) for copyright and acknowledgements.
 
-Many thanks to doppelganger (doppelheathen@gmail.com), who wrote the original comprehensive Super Mario Bros. disassembly. This can be found in the `docs/` folder of the repo.
+The game logic is a statically-recompiled version of the original 6502 machine code:
+the `docs/smbdis.asm` disassembly (by doppelganger, doppelheathen@gmail.com) was
+translated into Rust. The only NES subsystems that remain emulated are the PPU
+(video) and APU (audio); the CPU is now native Rust.
+
+Originally this was a C++ project (translated via a C++/flex/bison codegen tool).
+The entire codebase has since been converted to Rust and the C++ has been removed.
 
 ![Demo gif](https://github.com/MitchellSternke/SuperMarioBros-C/raw/master/demo.gif)
-
-*looks and plays just like the original*
 
 Building
 --------
 
 **Dependencies**
-- C++11 compiler
-- Boost
+- Rust (stable, 2021 edition)
 - SDL2
-- Flex
-- Bison
-- CMake
 
-From the root of the repo, execute:
+On macOS: `brew install sdl2`. On Debian/Ubuntu: `apt install libsdl2-dev`.
+
 ```
-mkdir build
-cd build
-cmake ..
-make
+cargo build --release
 ```
 
-This should create the executable `smbc` in the `build` directory.
+This produces `target/release/smbc`.
 
 Running
 -------
 
-This requires an *unmodified* copy of the `Super Mario Bros. (JU) (PRG0) [!].nes` ROM to run. Without this, the game won't have any graphics, since the CHR data is used for rendering. By default, the program will look for this file in the current working directory, but this can also be configured in `smbc.conf`.
+Requires an *unmodified* copy of the `Super Mario Bros. (JU) (PRG0) [!].nes` ROM
+(the CHR data in the ROM is used for rendering — without it there are no graphics).
+By default the program looks for this file in the working directory; the path can
+be overridden in `smbc.conf`.
+
+```
+cargo run --release
+```
+
+**Controls:** Arrow keys = D-pad, `X` = A, `Z` = B, `Enter` = Start,
+`Backspace` = Select, `R` = reset, `F` = fullscreen, `Esc` = quit.
 
 Configuration
 -------------
 
-Optionally, the program can be configured with a file named `smbc.conf` in the working directory. This file has an INI format. For example, the following would configure the option `audio.frequency` to be `22050`:
+Optionally create a `smbc.conf` (INI format) in the working directory:
 
 ```
 [audio]
-frequency = 22050
+frequency = 48000
+
+[game]
+rom_file = Super Mario Bros. (JU) (PRG0) [!].nes
+frame_rate = 60
+
+[video]
+scale = 3
+scanlines = 1
+vsync = 1
+palette_file =
 ```
 
-The following is a list of all configurable options:
-
-### [audio] options
-
-#### enabled
-
-- Allows audio to be enabled (if set to 1) or disabled (if set to 0).
-- Default: 1
-
-#### frequency
-
-- Controls the frequency of sampled audio output, in Hz.
-- Default: 48000
-
-### [game] options
-
-#### frame_rate
-
-- The desired frame rate, in frames per second. Note that on some systems it may be necessary to disable vsync (see video.vsync) in order to achieve a frame rate higher than 60 fps.
-- Default: 60
-
-#### rom_file
-
-- The path to the Super Mario Bros. ROM file. Can be either relative to the working directory or absolute.
-- Default: "Super Mario Bros. (JU) (PRG0) [!].nes"
-
-### [video] options
-
-#### palette_file
-
-- Relative or absolute path to a custom palette file to use for rendering. The following formats are supported:
-  - 192-byte palette file: contains 64 (R,G,B) triples with one byte per color channel. Byte order must be (R,G,B). This is the standard *.pal file format used by many NES emulators. For more documentation see https://wiki.nesdev.com/w/index.php/.pal
-  - 1536-byte palette file: similar to the 192-byte palette file format described above. Only the first 192 bytes are used, as the rest are used by emphasis bits which are not supported by Super Mario Bros.
-- Default: ""
-
-#### scale
-
-- Controls the scale factor for rendered video.
-- Default: 3
-
-#### scanlines
-
-- Allows rendering scanlines to be enabled (if set to 1) or disabled (if set to 0)
-- Default: 1
-
-#### vsync
-
-- Allows vsync to be enabled (if set to 1) or disabled (if set to 0).
-- Default: 1
+See the original option docs; all keys and defaults are preserved.
 
 Architecture
 ------------
 
-The game consists of a few parts:
-- The decompiled original Super Mario Bros. source code in C++
-- An emulation layer, consisting of
-  - Core NES CPU functionality (RAM, CPU registers, call stack, and emulation of unique 6502 instructions that don't have C++ equivalents)
-  - Picture Processing Unit (PPU) emulation (for video)
-  - Audio Processing Unit (APU) emulation (for sound/music)
-  - Controller emulation
-- SDL2 library for cross-platform video/audio/input
-
-Essentially, the game is a statically recompiled version of Super Mario Bros. for modern platforms. The only part of the NES that doesn't have to be emulated is the CPU, since most instructions are now native C++ code.
-
-The plan is to eventually ditch all of the emulation layer and convert code that relies upon it. Once that's done, this will be a true cross-platform version of Super Mario Bros. which behaves identically to the original. It could then be easily modified and extended with new features!
+- `src/generated/` — Rust translated from the 6502 disassembly:
+  - `smb_code.rs` — the game logic, as a `Label`-dispatched state machine
+    (6502 `goto`/`JSR`/`RTS` control flow becomes a `loop { match label { … } }`).
+  - `smb_data.rs` — the game's constant data.
+  - `smb_constants.rs` — address/value constants.
+- `src/engine.rs` — NES CPU emulation: registers, status flags, RAM, the
+  call-return stack, and the ALU/memory operations the generated code calls.
+- `src/ppu.rs` — Picture Processing Unit (rendering).
+- `src/apu.rs` — Audio Processing Unit (sound/music).
+- `src/controller.rs` — controller input.
+- `src/configuration.rs`, `src/video.rs`, `src/constants.rs`, `src/main.rs` —
+  config, palette loading, and the SDL2 window/audio/game loop.
 
 License
 -------
 
-TODO
+The Rust port code is MIT-licensed, Copyright (c) 2026 Anubhav Gain. See
+[LICENSE](LICENSE).
+
+*Super Mario Bros.* is a trademark and copyright of Nintendo. This repository
+contains no ROM data — supply your own legally-obtained copy to play.
+
+Acknowledgements
+----------------
+
+- Original 6502 disassembly (`docs/smbdis.asm`) by doppelganger (doppelheathen@gmail.com).
+- Original C++ *SuperMarioBros-C* project by Mitchell Sternke, from which this Rust port was derived.
