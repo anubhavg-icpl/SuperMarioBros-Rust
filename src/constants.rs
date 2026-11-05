@@ -4,4 +4,3 @@ pub const APP_TITLE: &str = "Super Mario Bros.";
 pub const CONFIG_FILE_NAME: &str = "smbc.conf";
 pub const RENDER_WIDTH: u32 = 256;
 pub const RENDER_HEIGHT: u32 = 240;
-pub const MS_PER_SEC: f64 = 1000.0;

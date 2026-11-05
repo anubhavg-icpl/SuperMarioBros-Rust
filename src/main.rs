@@ -8,9 +8,12 @@ mod controller;
 mod engine;
 mod generated;
 mod ppu;
+mod state;
 mod video;
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use sdl2::event::{Event, WindowEvent};
@@ -18,7 +21,7 @@ use sdl2::keyboard::Scancode;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::BlendMode;
 
-use constants::{APP_TITLE, CONFIG_FILE_NAME, MS_PER_SEC, RENDER_HEIGHT, RENDER_WIDTH};
+use constants::{APP_TITLE, CONFIG_FILE_NAME, RENDER_HEIGHT, RENDER_WIDTH};
 use controller::Button;
 use engine::Engine;
 
@@ -132,8 +135,13 @@ fn main() {
 
     let mut running = true;
     let mut fullscreen = false;
-    let prog_start_time = timer_ticks(&sdl_context);
-    let mut frame: i64 = 0;
+    let frame_duration = Duration::from_secs_f64(1.0 / configuration::frame_rate().max(1) as f64);
+    let mut next_frame_time = Instant::now();
+
+    let mut paused = false;
+    let mut slot: u32 = 1;
+    let mut status: Option<(String, Instant)> = None;
+    let mut shown_title = String::new();
 
     while running {
         for event in event_pump.poll_iter() {
@@ -143,8 +151,51 @@ fn main() {
                     win_event: WindowEvent::Close,
                     ..
                 } => running = false,
+                Event::Window {
+                    win_event: WindowEvent::FocusLost,
+                    ..
+                } => paused = true,
+                Event::KeyDown {
+                    scancode: Some(code),
+                    repeat: false,
+                    ..
+                } => {
+                    let message = match code {
+                        Scancode::P => {
+                            paused = !paused;
+                            None
+                        }
+                        Scancode::F5 => Some(save_to_slot(&engine.lock().unwrap(), slot)),
+                        Scancode::F9 => Some(load_from_slot(&mut engine.lock().unwrap(), slot)),
+                        _ => slot_for_key(code).map(|n| {
+                            slot = n;
+                            format!("Slot {} selected", n)
+                        }),
+                    };
+                    if let Some(message) = message {
+                        println!("{}", message);
+                        status = Some((message, Instant::now() + Duration::from_secs(2)));
+                    }
+                }
                 _ => {}
             }
+        }
+
+        // Window title doubles as the status line (paused, slot, last action).
+        if status.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
+            status = None;
+        }
+        let mut title = format!("{}  [slot {}]", APP_TITLE, slot);
+        if paused {
+            title.push_str("  PAUSED");
+        }
+        if let Some((message, _)) = &status {
+            title.push_str("  - ");
+            title.push_str(message);
+        }
+        if title != shown_title {
+            let _ = canvas.window_mut().set_title(&title);
+            shown_title = title;
         }
 
         let keys = event_pump.keyboard_state();
@@ -175,7 +226,11 @@ fn main() {
                 fullscreen = true;
             }
 
-            engine.update();
+            // While paused the game does not advance; the last frame stays on
+            // screen and the audio queue drains to silence.
+            if !paused {
+                engine.update();
+            }
             engine.render(&mut render_buffer);
         }
 
@@ -204,21 +259,75 @@ fn main() {
         canvas.present();
 
         // Frame pacing: keep as close to the desired FPS as possible.
-        let now = timer_ticks(&sdl_context);
-        let delay = prog_start_time as i64
-            + (frame as f64 * MS_PER_SEC / configuration::frame_rate() as f64) as i64
-            - now as i64;
-        if delay > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(delay as u64));
-            frame += 1;
-        } else {
-            frame = 0;
+        // The game logic and the APU advance exactly once per loop iteration,
+        // so the loop must never run faster than `frame_rate`, whatever the
+        // display's refresh rate is.
+        next_frame_time += frame_duration;
+        let now = Instant::now();
+        if next_frame_time > now {
+            std::thread::sleep(next_frame_time - now);
+        } else if now - next_frame_time > Duration::from_millis(100) {
+            // Fell far behind (window drag, suspend, ...): re-anchor instead
+            // of fast-forwarding to catch up.
+            next_frame_time = now;
         }
     }
 }
 
-fn timer_ticks(sdl: &sdl2::Sdl) -> u32 {
-    sdl.timer().unwrap().ticks()
+/// Number keys 1-9 (top row or keypad) select a save slot.
+fn slot_for_key(code: Scancode) -> Option<u32> {
+    use Scancode::*;
+    let n = match code {
+        Num1 | Kp1 => 1,
+        Num2 | Kp2 => 2,
+        Num3 | Kp3 => 3,
+        Num4 | Kp4 => 4,
+        Num5 | Kp5 => 5,
+        Num6 | Kp6 => 6,
+        Num7 | Kp7 => 7,
+        Num8 | Kp8 => 8,
+        Num9 | Kp9 => 9,
+        _ => return None,
+    };
+    Some(n)
+}
+
+/// Save states live next to the ROM file: `smbc-slot1.state` ... `smbc-slot9.state`.
+fn slot_path(slot: u32) -> PathBuf {
+    let rom = Path::new(configuration::rom_file());
+    let dir = rom.parent().unwrap_or(Path::new(""));
+    dir.join(format!("smbc-slot{}.state", slot))
+}
+
+fn save_to_slot(engine: &Engine, slot: u32) -> String {
+    let path = slot_path(slot);
+    let data = engine.save_state();
+    // Write to a temporary file and rename, so a crash mid-write can never
+    // destroy the previous save in this slot.
+    let tmp = path.with_extension("state.tmp");
+    let result = std::fs::write(&tmp, &data).and_then(|_| std::fs::rename(&tmp, &path));
+    match result {
+        Ok(()) => format!("Saved to slot {}", slot),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            format!("Could not save slot {} ({}): {}", slot, path.display(), e)
+        }
+    }
+}
+
+fn load_from_slot(engine: &mut Engine, slot: u32) -> String {
+    let path = slot_path(slot);
+    let data = match std::fs::read(&path) {
+        Ok(data) => data,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return format!("Slot {} is empty", slot);
+        }
+        Err(e) => return format!("Could not read slot {}: {}", slot, e),
+    };
+    match engine.load_state(&data) {
+        Ok(()) => format!("Loaded slot {}", slot),
+        Err(e) => format!("Could not load slot {}: {}", slot, e),
+    }
 }
 
 /// Build the 3x scanline overlay texture (multiplicative blend).

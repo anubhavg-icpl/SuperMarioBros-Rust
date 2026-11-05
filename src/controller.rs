@@ -1,5 +1,7 @@
 //! NES game controller emulation (ported from Controller.cpp).
 
+use crate::state::impl_save_state;
+
 #[derive(Copy, Clone)]
 pub enum Button {
     A = 0,
@@ -53,3 +55,5 @@ impl Controller {
         self.strobe = value;
     }
 }
+
+impl_save_state!(Controller { button_states, button_index, strobe });
