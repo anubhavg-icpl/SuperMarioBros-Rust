@@ -11,6 +11,7 @@ mod ppu;
 mod video;
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use sdl2::event::{Event, WindowEvent};
@@ -18,7 +19,7 @@ use sdl2::keyboard::Scancode;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::BlendMode;
 
-use constants::{APP_TITLE, CONFIG_FILE_NAME, MS_PER_SEC, RENDER_HEIGHT, RENDER_WIDTH};
+use constants::{APP_TITLE, CONFIG_FILE_NAME, RENDER_HEIGHT, RENDER_WIDTH};
 use controller::Button;
 use engine::Engine;
 
@@ -132,8 +133,8 @@ fn main() {
 
     let mut running = true;
     let mut fullscreen = false;
-    let prog_start_time = timer_ticks(&sdl_context);
-    let mut frame: i64 = 0;
+    let frame_duration = Duration::from_secs_f64(1.0 / configuration::frame_rate().max(1) as f64);
+    let mut next_frame_time = Instant::now();
 
     while running {
         for event in event_pump.poll_iter() {
@@ -204,21 +205,19 @@ fn main() {
         canvas.present();
 
         // Frame pacing: keep as close to the desired FPS as possible.
-        let now = timer_ticks(&sdl_context);
-        let delay = prog_start_time as i64
-            + (frame as f64 * MS_PER_SEC / configuration::frame_rate() as f64) as i64
-            - now as i64;
-        if delay > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(delay as u64));
-            frame += 1;
-        } else {
-            frame = 0;
+        // The game logic and the APU advance exactly once per loop iteration,
+        // so the loop must never run faster than `frame_rate`, whatever the
+        // display's refresh rate is.
+        next_frame_time += frame_duration;
+        let now = Instant::now();
+        if next_frame_time > now {
+            std::thread::sleep(next_frame_time - now);
+        } else if now - next_frame_time > Duration::from_millis(100) {
+            // Fell far behind (window drag, suspend, ...): re-anchor instead
+            // of fast-forwarding to catch up.
+            next_frame_time = now;
         }
     }
-}
-
-fn timer_ticks(sdl: &sdl2::Sdl) -> u32 {
-    sdl.timer().unwrap().ticks()
 }
 
 /// Build the 3x scanline overlay texture (multiplicative blend).
