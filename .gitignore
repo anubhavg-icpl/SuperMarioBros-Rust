@@ -2,3 +2,7 @@
 *.nes
 *.pal
 smbc.conf
+
+# Save states (written next to the ROM)
+*.state
+*.state.tmp

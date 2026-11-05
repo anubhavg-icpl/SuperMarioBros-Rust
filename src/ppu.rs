@@ -3,6 +3,8 @@
 //! Faithful 1:1 port of source/Emulation/PPU.cpp. Unlike the C++ version,
 //! the PPU owns its CHR data and RGB palette instead of referencing the engine.
 
+use crate::state::impl_save_state;
+
 const NAMETABLE_MIRROR_LOOKUP: [[u8; 4]; 2] = [
     [0, 0, 1, 1], // Vertical
     [0, 1, 0, 1], // Horizontal
@@ -485,3 +487,11 @@ mod tests {
         assert_eq!(buffer[0], DEFAULT_PALETTE_RGB[0x21]);
     }
 }
+
+// `chr` (from the ROM) and `palette_rgb` (from the config) are deliberately
+// not part of a save state.
+impl_save_state!(Ppu {
+    ppu_ctrl, ppu_mask, ppu_status, oam_address, ppu_scroll_x, ppu_scroll_y,
+    palette, nametable, oam, current_address, write_toggle, vram_buffer,
+    status_cycle,
+});

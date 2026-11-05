@@ -45,6 +45,19 @@ cargo run --release
 **Controls:** Arrow keys = D-pad, `X` = A, `Z` = B, `Enter` = Start,
 `Backspace` = Select, `R` = reset, `F` = fullscreen, `Esc` = quit.
 
+**Pause and save states:**
+
+| Key | Action |
+| --- | --- |
+| `P` | Pause / resume (the game also pauses when its window loses focus) |
+| `1`–`9` | Select save slot (default: slot 1) |
+| `F5` | Save state to the selected slot |
+| `F9` | Load state from the selected slot |
+
+States are written next to the ROM as `smbc-slot1.state` … `smbc-slot9.state`,
+so they survive restarting the program. The window title shows the selected
+slot, whether the game is paused, and the result of the last save/load.
+
 Configuration
 -------------
 

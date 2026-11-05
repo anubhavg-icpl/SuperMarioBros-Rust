@@ -10,6 +10,7 @@ use crate::apu::Apu;
 use crate::configuration;
 use crate::controller::Controller;
 use crate::ppu::Ppu;
+use crate::state::{impl_save_state, Reader, SaveState, StateError, Writer};
 
 const DATA_STORAGE_OFFSET: i32 = 0x8000;
 
@@ -97,6 +98,29 @@ impl Engine {
 
     pub fn set_palette(&mut self, palette: [u32; 64]) {
         self.ppu.borrow_mut().set_palette(palette);
+    }
+
+    /// Serialize the full game state (CPU, RAM, PPU, APU, controllers).
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        self.save(&mut w);
+        w.into_bytes()
+    }
+
+    /// Restore a state produced by `save_state`. On error the engine is left
+    /// unchanged.
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), StateError> {
+        let backup = self.save_state();
+        let result = Reader::new(data).and_then(|mut r| {
+            self.load(&mut r)?;
+            r.finish()
+        });
+        if result.is_err() {
+            // Roll back so a corrupt file can never leave the game half-loaded.
+            let mut r = Reader::new(&backup).expect("backup state is valid");
+            self.load(&mut r).expect("backup state is valid");
+        }
+        result
     }
 
     //-----------------------------------------------------------------
@@ -465,6 +489,13 @@ impl Engine {
     }
 }
 
+// `data_storage` holds the game's constant tables (loaded on reset), so it is
+// not part of a save state.
+impl_save_state!(Engine {
+    ra, rx, ry, rs, c, z, n, ram, return_stack, return_top,
+    ppu, apu, controller1, controller2,
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,5 +517,69 @@ mod tests {
 
         // OperMode ($0770) should be a valid mode (0..=3) after running.
         assert!(engine.debug_ram(0x0770) <= 3, "OperMode out of range");
+    }
+
+    fn run_frames(engine: &mut Engine, frames: usize, buffer: &mut [u32]) {
+        for _ in 0..frames {
+            engine.update();
+            engine.render(buffer);
+        }
+    }
+
+    /// Loading a state must reproduce the exact same future: same RAM and
+    /// the same rendered picture, frame for frame.
+    #[test]
+    fn save_state_round_trip_is_deterministic() {
+        let rom = vec![0u8; 16 + 16384 * 2 + 8192];
+        let mut buffer = vec![0u32; 256 * 240];
+
+        let mut engine = Engine::new(&rom);
+        engine.reset();
+        run_frames(&mut engine, 200, &mut buffer);
+        let state = engine.save_state();
+
+        run_frames(&mut engine, 150, &mut buffer);
+        let expected_ram = engine.ram.clone();
+        let expected_picture = buffer.clone();
+
+        // Diverge, then load: we must land back exactly where we saved.
+        engine.controller1().set_button_state(crate::controller::Button::Start, true);
+        run_frames(&mut engine, 77, &mut buffer);
+        engine.controller1().set_button_state(crate::controller::Button::Start, false);
+        assert_ne!(engine.save_state(), state, "test setup: the game did not diverge");
+        engine.load_state(&state).expect("load_state failed");
+        assert_eq!(engine.save_state(), state, "state differs right after loading");
+
+        run_frames(&mut engine, 150, &mut buffer);
+        assert_eq!(engine.ram, expected_ram, "RAM diverged after loading a state");
+        assert!(buffer == expected_picture, "picture diverged after loading a state");
+
+        // A fresh engine (as after restarting the program) also accepts it.
+        let mut fresh = Engine::new(&rom);
+        fresh.reset();
+        fresh.load_state(&state).expect("load into fresh engine failed");
+        run_frames(&mut fresh, 150, &mut buffer);
+        assert_eq!(fresh.ram, expected_ram, "fresh engine diverged after loading");
+    }
+
+    #[test]
+    fn corrupt_state_is_rejected_without_changing_the_game() {
+        let rom = vec![0u8; 16 + 16384 * 2 + 8192];
+        let mut buffer = vec![0u32; 256 * 240];
+        let mut engine = Engine::new(&rom);
+        engine.reset();
+        run_frames(&mut engine, 120, &mut buffer);
+        let before = engine.save_state();
+
+        assert!(engine.load_state(b"not a state").is_err());
+        assert!(engine.load_state(&before[..before.len() - 1]).is_err());
+        let mut longer = before.clone();
+        longer.push(0);
+        assert!(engine.load_state(&longer).is_err());
+        let mut wrong_version = before.clone();
+        wrong_version[8] = 99;
+        assert!(engine.load_state(&wrong_version).is_err());
+
+        assert_eq!(engine.save_state(), before, "a failed load changed the game");
     }
 }

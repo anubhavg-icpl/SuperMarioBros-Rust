@@ -2,6 +2,8 @@
 //!
 //! Faithful port of source/Emulation/APU.cpp / APU.hpp.
 
+use crate::state::{impl_save_state, Reader, SaveState, StateError, Writer};
+
 const AUDIO_BUFFER_LENGTH: usize = 4096;
 
 static LENGTH_TABLE: [u8; 32] = [
@@ -548,5 +550,46 @@ impl Apu {
             }
             _ => {}
         }
+    }
+}
+
+impl_save_state!(Pulse {
+    enabled, channel, length_enabled, length_value, timer_period, timer_value,
+    duty_mode, duty_value, sweep_reload, sweep_enabled, sweep_negate,
+    sweep_shift, sweep_period, sweep_value, envelope_enabled, envelope_loop,
+    envelope_start, envelope_period, envelope_value, envelope_volume,
+    constant_volume,
+});
+
+impl_save_state!(Triangle {
+    enabled, length_enabled, length_value, timer_period, timer_value,
+    duty_value, counter_period, counter_value, counter_reload,
+});
+
+impl_save_state!(Noise {
+    enabled, mode, shift_register, length_enabled, length_value, timer_period,
+    timer_value, envelope_enabled, envelope_loop, envelope_start,
+    envelope_period, envelope_value, envelope_volume, constant_volume,
+});
+
+// The queued audio samples are not saved: they belong to the moment the state
+// was taken, so loading drops them instead of replaying stale sound.
+impl SaveState for Apu {
+    fn save(&self, w: &mut Writer) {
+        self.frame_value.save(w);
+        self.pulse1.save(w);
+        self.pulse2.save(w);
+        self.triangle.save(w);
+        self.noise.save(w);
+    }
+
+    fn load(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.frame_value.load(r)?;
+        self.pulse1.load(r)?;
+        self.pulse2.load(r)?;
+        self.triangle.load(r)?;
+        self.noise.load(r)?;
+        self.audio_buffer_length = 0;
+        Ok(())
     }
 }
